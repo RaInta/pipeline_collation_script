@@ -41,11 +41,10 @@ RESULTS_DIR = os.path.abspath(INITIAL_DIR)
 ### refactored---perhaps a separate text file  ###
 ### TODO this is ugly because they're globals! ###
 ##################################################
+# There's no real security risk here: to use these, you require your own Grid certificate
 
-#LIGO_USER = "ra.inta"
-#ACCT_TAG = "ligo.prod.o1.cw.directedisolatedother.coherent"
-LIGO_USER = "ben.owen"
-ACCT_TAG = "ligo.prod.o1.cw.directedisolated.coherent"
+LIGO_USER = "albert.einstein"
+ACCT_TAG = "insert.your.accounting.tag"
 
 ##################################################
 
