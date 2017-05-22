@@ -24,6 +24,7 @@ except ImportError:
 import bz2
 from intervaltree import Interval,IntervalTree
 import os
+from sys import argv
 import re
 from math import ceil, floor
 import glob
@@ -35,10 +36,12 @@ from CasACommon import CondorSubFile,assert_no_files_matching,indent
 # 0) Read in some basic setup information
 ############################################################
 
-JOBS_PER_SUBDIR=250 # For the moment this is hard-coded here (following the style of two other scripts in the pipeline).
+JOBS_PER_SUBDIR=250  # For the moment this is hard-coded here (following the style of two other scripts in the pipeline).
 
-# Number of parallel jobs to cut the collate job into
-N_PARALLEL_JOBS = 200 
+# If we have an input argument, then take it as the number of parallel jobs to 
+# cut the collate job into, otherwise take it as 200
+N_PARALLEL_JOBS = int(argv[1]) if len(argv)>1 else 200 
+
 
 SCRIPTS = os.getcwd()
 

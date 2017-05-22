@@ -3,7 +3,7 @@
 #------------------------------------------------------------------------------
 #           Name: collateSearchResults.py
 #         Author: Ra Inta, 20151007
-#  Last Modified: 20161212, R.I.
+#  Last Modified: 20170324, R.I.
 #
 # This is designed to speed up the collation procedure in coherent directed
 # searches. The precursor is the PostCasA modified CollateSearchResults.pl
@@ -22,17 +22,18 @@ try:
 except ImportError:
     import xml.etree.ElementTree as ET
 try:
-    from xml.etree.cElementTree import Element, SubElement, Comment, tostring
+    from xml.etree.cElementTree import Element, SubElement
 except ImportError:
-    from xml.etree.ElementTree import Element, SubElement, Comment, tostring
+    from xml.etree.ElementTree import Element, SubElement
 
 import bz2
-from intervaltree import Interval,IntervalTree
+from intervaltree import IntervalTree
 import os
 import re
-from math import ceil,cos
+from math import ceil
 from sys import argv
-from CasACommon import indent,openFile,template_covering_band
+from CasACommon import indent, openFile, template_covering_band, orbitalDoppler
+
 
 # For timing:
 import time
@@ -55,52 +56,90 @@ else:
 ############################################################
 
 
-# TODO read this from setup file---i.e. add to setup file?
-JOBS_PER_SUBDIR=250 # For the moment this is hard-coded here (following the style of two other scripts in the pipeline).
-alpha_stat=0.05  # Statistical alpha (confidence = 1 - alpha_stat ). Hard-coded here, but easy enough to read this from setup.
+# TODO read this from setup file---i.e. add to search_setup.xml?
+JOBS_PER_SUBDIR = 250  # For the moment this is hard-coded here (following the style of two other scripts in the pipeline).
+alpha_stat = 0.05  # Statistical alpha (confidence = 1 - alpha_stat ). Hard-coded here, but easy enough to read this from setup.
 
 # This CFSv2 column output should be modified, depending on the flags you used to run it.
 # This is the old (SSE2) version:
 columnIdx = ["freq", "alpha", "delta", "f1dot", "f2dot", "f3dot", "twoF", "twoF_H1", "twoF_L1"]
 
-# Get parameters from search_setup.xml
-with open('../../search_setup.xml','r') as searchSetup:
-    setup_tree = ET.parse( searchSetup )
-    setup_root = setup_tree.getroot()
+# Get parameters from setup XMLs (search_setup.xml, optimal_sft_stretch.xml)
+with open('../../search_setup.xml', 'r') as searchSetup:
+    setup_root = ET.parse( searchSetup ).getroot()
 
 for search_params in setup_root.iter('search'):
     search_band = float( search_params.find('band').text )
     start_freq = float( search_params.find('freq').text )
     Tspan = float( search_params.find('span_time').text )
 
+for search_params in setup_root.iter('target'):
+    alpha = float( search_params.find('right_ascension').text )
+    delta = float( search_params.find('declination').text )
+
+with open('../../optimal_sft_stretch.xml', 'r') as searchSetup:
+    stretch_root = ET.parse( searchSetup ).getroot()
+
+for search_params in stretch_root.iter('stretch'):
+    # GPS times play nicer with other functions as integers. Looking at you, lalapps_tconvert
+    Tstart = int( search_params.find('start_time').text )
+    Tend = int( search_params.find('end_time').text )
+    Tmid = int((Tend + Tstart )/2)
+
+
+# Set up upper limits XML
 for ul_params in setup_root.iter('upper_limit'):
     ul_band = float( ul_params.find('band').text )
 
 NUM_UL_BANDS = int( ceil( search_band / ul_band ) )
 
+
+# Calculate maximum and minimum Doppler modulation over the whole Tspan
+## This is to compare templates to potential instrumental lines
+## Because searches may now extend a reasonable fraction of a year, a
+## conservative approach is taken, where each template is modulated according to
+## the extrema during the search. We're going to make this even more conservative when
+## We check against the fscan, by looking at the template covering band.
+
+doppler_t = range(Tstart, Tend, (Tend - Tstart)/200)  # Interpolate with 200 steps (doesn't need to be super-accurate)
+doppler_max = max([orbitalDoppler(alpha, delta, t) for t in doppler_t])
+doppler_min = min([orbitalDoppler(alpha, delta, t) for t in doppler_t])
+
+
 ############################################################
 # 1) Take in search results and vetoes
 ############################################################
 
+# Read in search_bands.xml.bz2, but ignore loudest_template information:
 with bz2.BZ2File( searchBandsFileName, 'rb') as searchBandsFile:
-    search_tree = ET.parse( searchBandsFile )
-    search_root = search_tree.getroot()
+    old_search_tree = ET.parse( searchBandsFile )
+    old_search_root = old_search_tree.getroot()
+
+search_root = Element("search_bands")
+
+for search in old_search_root:
+    search_job = SubElement(search_root, search.tag)
+    indent(search_job, 1)
+    for elem in "band", "freq", "job", "subdir":
+        search_subjob = SubElement(search_job, elem)
+        search_subjob.text = search.find( elem ).text
+        indent(search_subjob, 2)
 
 # Create upper limit bands
 upper_limit_root = ET.Element("upper_limit_bands")
 
 for jobUL in range( NUM_UL_BANDS ):
-   ul_band_job = SubElement(upper_limit_root, "upper_limit_band")
-   indent(ul_band_job, 1)
-   ul_Idx = SubElement(ul_band_job, "job")
-   ul_Idx.text = str( jobUL )
-   indent(ul_Idx, 2)
-   ul_Idx = SubElement(ul_band_job, "freq")
-   ul_Idx.text = str( start_freq + jobUL*ul_band )
-   indent(ul_Idx, 2)
-   ul_Idx = SubElement(ul_band_job, "band")
-   ul_Idx.text = str( ul_band )
-   indent(ul_Idx, 2)
+    ul_band_job = SubElement(upper_limit_root, "upper_limit_band")
+    indent(ul_band_job, 1)
+    ul_Idx = SubElement(ul_band_job, "job")
+    ul_Idx.text = str( jobUL )
+    indent(ul_Idx, 2)
+    ul_Idx = SubElement(ul_band_job, "freq")
+    ul_Idx.text = str( start_freq + jobUL*ul_band )
+    indent(ul_Idx, 2)
+    ul_Idx = SubElement(ul_band_job, "band")
+    ul_Idx.text = str( ul_band )
+    indent(ul_Idx, 2)
 
 
 ## Walk through the XML tree for job, 2F and f0; don't pick up the vetoed bands.
@@ -122,17 +161,18 @@ veto_segments = []
 for vetoBand in veto_root.iter('veto_band'):
     veto_startFreq = float( vetoBand.find('freq').text )
     veto_endFreq = veto_startFreq + float( vetoBand.find('band').text )
-    if vetoBand.find('power') is not None:
-        veto_power =  vetoBand.find('power').text
-    veto_segments.append( (veto_startFreq, veto_endFreq, veto_power) )
-    #veto_segments.append( (veto_startFreq, veto_endFreq ) )
+    # TODO uncomment below if fscan power is required
+    #if vetoBand.find('power') is not None:
+    #    veto_power = vetoBand.find('power').text
+    #veto_segments.append( (veto_startFreq, veto_endFreq, veto_power) )
+    veto_segments.append( (veto_startFreq, veto_endFreq ) )
 
 ul_segments = []
 
 for ulBand in upper_limit_root.iter('upper_limit_band'):
     ul_jobNum = int( ulBand.find('job').text )
     ul_startFreq = float( ulBand.find('freq').text )
-    ul_endFreq =  ul_startFreq + float( ulBand.find('band').text )
+    ul_endFreq = ul_startFreq + float( ulBand.find('band').text )
     ul_segments.append( (ul_startFreq, ul_endFreq, ul_jobNum) )
 
 ############################################################
@@ -141,15 +181,16 @@ for ulBand in upper_limit_root.iter('upper_limit_band'):
 
 
 # Create interval trees from search, veto and upper limit bands
-search_interval = IntervalTree.from_tuples( search_segments ) # O( n*log(n) )
+search_interval = IntervalTree.from_tuples( search_segments )  # O( n*log(n) )
 veto_interval = IntervalTree.from_tuples( veto_segments )
-ul_interval = IntervalTree.from_tuples( ul_segments ) # O( n*log(n)
+ul_interval = IntervalTree.from_tuples( ul_segments )  # O( n*log(n)
 
 
 # Remove vetoed bands from search_bands
-search_interval.update( veto_interval ) # O( v*log(n) ), v is number of vetoes
-search_interval.split_overlaps()  # O( n*log(n) ), best case, where
-[search_interval.remove_overlap(a[0], a[1]) for a in veto_interval] # O( (v + v_band)*log(n) ), v_band is range of vetoing (usually ~1% of band)
+# TODO testing leaving the unmodulated search bands alone from the vetoing process--might blow out computational complexity
+#search_interval.update( veto_interval )  # O( v*log(n) ), v is number of vetoes
+#search_interval.split_overlaps()  # O( n*log(n) ), best case, where
+#[search_interval.remove_overlap(a[0], a[1]) for a in veto_interval]  # O( (v + v_band)*log(n) ), v_band is range of vetoing (usually ~1% of band)
 
 
 # Slice the search band intervals along upper limit band boundaries
@@ -164,9 +205,9 @@ for a in ul_interval:
 # Easy to remove veto segments from upper limit bands too!
 # TODO ask Ben+Teviet etc. for go-ahead
 # Just need to uncomment the following three lines:
-ul_interval.update( veto_interval ) # O( v*log(n) ), v is number of vetoes
-ul_interval.split_overlaps()  # O( n*log(n) ), best case, where
-[ul_interval.remove_overlap(a) for a in veto_interval] # O( (v + v_band)*log(n) ), v_band is range of vetoing (usually ~1% of band)
+#ul_interval.update( veto_interval )  # O( v*log(n) ), v is number of vetoes
+#ul_interval.split_overlaps()  # O( n*log(n) ), best case, where
+#[ul_interval.remove_overlap(a) for a in veto_interval]  # O( (v + v_band)*log(n) ), v_band is range of vetoing (usually ~1% of band)
 
 
 ############################################################
@@ -218,7 +259,7 @@ for searchBand in sorted_searchBands:
         if os.path.getsize( logFileName ):
             print "Condor error file " + logFileName + " is not empty!"
             break
-        # check search.log.$job, check for number of templates and last line -- openFile automatically checks for BZ2 zipped files 
+        # check search.log.$job, check for number of templates and last line -- openFile automatically checks for BZ2 zipped files
         with openFile( os.path.join(subDir, "search.log." + str( jobNum ) ) ) as logFile:
             #logFile.seek(-100,2) # Skip right to 100B before the end of the file; only do this for large files
             lastLine = False
@@ -226,7 +267,7 @@ for searchBand in sorted_searchBands:
                 if re.match( "^.*Counting spindown lattice templates \.\.\.", eachLine):
                     singleLine = eachLine.split()
                     numTemplates = singleLine[-1]
-                if re.match("^.*\[debug\]: Freeing Doppler grid \.\.\. done", eachLine) or re.match("^.*\[debug\]: Loading SFTs \.\.\. done",eachLine):
+                if re.match("^.*\[debug\]: Freeing Doppler grid \.\.\. done", eachLine) or re.match("^.*\[debug\]: Loading SFTs \.\.\. done", eachLine):
                     lastLine = True
             if not lastLine:
                 print("No last line of search.log." + str( jobNum ) )
@@ -235,7 +276,7 @@ for searchBand in sorted_searchBands:
         # check last line of search_results.txt.$job and search_histogram.txt.$job
         for jobFileSpecifier in ("histogram", "results"):
             jobFileName = os.path.join(subDir, "search_" + jobFileSpecifier + ".txt." + str( jobNum ) )
-            # TODO Need to check for BZ2 possiblity for end of search results files more gracefully.
+            # TODO Need to check for BZ2 possiblity for end of search results files more gracefully. Use try..except
             if not os.path.isfile( jobFileName ):
                 jobFileName += ".bz2"
             lastLine = False
@@ -262,19 +303,23 @@ for searchBand in sorted_searchBands:
             eachLine = line.split()
             if not (eachLine[0][0] == "%"):
                 twoF = float( eachLine[6] )
-                f0 = float(template_covering_band(eachLine, Tspan)[0])
-                f0Band = float(template_covering_band(eachLine, Tspan)[1])
+                f0 = float( eachLine[0] )
+                # Check if template is fscan vetoed
+                ( f0_cover, f0Band_cover ) = template_covering_band(eachLine, Tspan)
+                if veto_interval.overlaps( doppler_min*f0_cover, doppler_max*(f0_cover + f0Band_cover) ):
+                    twoF = 0.0  # Just so upper limit loop doesn't have to do the same check...
                 # Check if template is IFO vetoed
                 if (float( eachLine[7] ) >= twoF or float( eachLine[8] ) >= twoF ):
                     IFOvetoed += 1
                     twoF = 0.0  # Just so upper limit loop doesn't have to do the same check...
-                # Make sure the covering band is in the search band segment
-                elif ( ( searchBand[0] <= f0 ) and ( f0+f0Band <= searchBand[1] ) ):
+                # Make sure f0 is in the search band segment
+                elif ( searchBand[0] <= f0 <= searchBand[1] ):
                     if twoF > max2F:
                         max2F = twoF
                         loudestLine = eachLine
-                # Check the upper limit band segment
-                if ( (ulSegment[0] <= f0 ) and (f0+f0Band <= ulSegment[1]) ):
+                # TODO remove below if works OK
+                #if ( (ulSegment[0] <= f0 ) and (f0+f0Band <= ulSegment[1]) ):
+                if ( ulSegment[0] <= f0 <= ulSegment[1] ):
                     if twoF > max2F_ul:
                         max2F_ul = twoF
                         loudestLine_ul = eachLine
@@ -285,6 +330,7 @@ for searchBand in sorted_searchBands:
             for searchJobSubElement in searchJobElement.iter('job'):
                 if searchJobSubElement.text == str( jobNum ):
                     loudestEl = SubElement( searchJobElement,"loudest_nonvetoed_template")
+                    loudestEl.text = ''
                     indent(loudestEl, 1)
                     currentSearchJobEl = searchJobElement
         # Spit the dummy if IFOvetoed >= alpha_stat*numTemplates:
@@ -319,14 +365,14 @@ for searchBand in sorted_searchBands:
                 loudIdx.text = loudestLine[Idx]
                 indent(loudIdx, 2)   # loudest template values are level 2
             loudIdx = SubElement( loudestEl, "cover_freq")
-            loudIdx.text = template_covering_band(loudestLine, Tspan)[0]
+            loudIdx.text = str( template_covering_band(loudestLine, Tspan)[0] )
             indent(loudIdx, 2)   # loudest template values are level 2
             loudIdx = SubElement( loudestEl, "cover_band")
-            loudIdx.text = template_covering_band(loudestLine, Tspan)[1]
+            loudIdx.text = str( template_covering_band(loudestLine, Tspan)[1] )
             indent(loudIdx, 2)   # loudest template values are level 2
-        SubElement( currentSearchJobEl,"num_templates").text = numTemplates
+        SubElement( currentSearchJobEl, "num_templates").text = numTemplates
         indent(loudestEl, 1)
-        SubElement( currentSearchJobEl,"num_templates_vetoed").text = str( IFOvetoed )
+        SubElement( currentSearchJobEl, "num_templates_vetoed").text = str( IFOvetoed )
         indent(loudestEl, 1)
     # Check to see if it's both the last band segment in the job the very last upper limit segment
     # TODO make this and the search band insertion loop a single function(jobNum, sorted_Bands, loudestLine, outputTree)
@@ -335,11 +381,11 @@ for searchBand in sorted_searchBands:
         for ulElement in upper_limit_root:
             for ulSubElement in ulElement.iter('job'):
                 if ulSubElement.text == str( ulNum ):
-                    loudestEl = SubElement( ulElement,"loudest_nonvetoed_template")
+                    loudestEl = SubElement( ulElement, "loudest_nonvetoed_template")
                     indent(loudestEl, 1)
-                    SubElement( ulElement,"num_templates").text = numTemplates
+                    SubElement( ulElement, "num_templates").text = numTemplates
                     indent(loudestEl, 1)
-                    SubElement( ulElement,"num_templates_vetoed").text = str( IFOvetoed )
+                    SubElement( ulElement, "num_templates_vetoed").text = str( IFOvetoed )
                     indent(loudestEl, 1)
         if loudestLine_ul:
             for Idx in range( len(columnIdx )):
@@ -347,10 +393,10 @@ for searchBand in sorted_searchBands:
                 loudIdx.text = loudestLine_ul[Idx]
                 indent(loudIdx, 2)   # loudest template values are level 2
             loudIdx = SubElement( loudestEl, "cover_freq")
-            loudIdx.text = template_covering_band(loudestLine_ul, Tspan)[0]
+            loudIdx.text = str( template_covering_band(loudestLine_ul, Tspan)[0] )
             indent(loudIdx, 2)   # loudest template values are level 2
             loudIdx = SubElement( loudestEl, "cover_band")
-            loudIdx.text = template_covering_band(loudestLine_ul, Tspan)[1]
+            loudIdx.text = str( template_covering_band(loudestLine_ul, Tspan)[1] )
             indent(loudIdx, 2)   # loudest template values are level 2
         else:
             # If whole UL band is vetoed...
@@ -365,11 +411,11 @@ for searchBand in sorted_searchBands:
         for ulElement in upper_limit_root:
             for ulSubElement in ulElement.iter('job'):
                 if ulSubElement.text == str( ulNum ):
-                    loudestEl = SubElement( ulElement,"loudest_nonvetoed_template")
+                    loudestEl = SubElement( ulElement, "loudest_nonvetoed_template")
                     indent(loudestEl, 1)
-                    SubElement( ulElement,"num_templates").text = numTemplates
+                    SubElement( ulElement, "num_templates").text = numTemplates
                     indent(loudestEl, 1)
-                    SubElement( ulElement,"num_templates_vetoed").text = str( IFOvetoed )
+                    SubElement( ulElement, "num_templates_vetoed").text = str( IFOvetoed )
                     indent(loudestEl, 1)
         if loudestLine_ul:
             for Idx in range( len(columnIdx )):
@@ -377,10 +423,10 @@ for searchBand in sorted_searchBands:
                 loudIdx.text = loudestLine_ul[Idx]
                 indent(loudIdx, 2)   # loudest template values are level 2
             loudIdx = SubElement( loudestEl, "cover_freq")
-            loudIdx.text = template_covering_band(loudestLine_ul, Tspan)[0]
+            loudIdx.text = str( template_covering_band(loudestLine_ul, Tspan)[0] )
             indent(loudIdx, 2)   # loudest template values are level 2
             loudIdx = SubElement( loudestEl, "cover_band")
-            loudIdx.text = template_covering_band(loudestLine_ul, Tspan)[1]
+            loudIdx.text = str( template_covering_band(loudestLine_ul, Tspan)[1] )
             indent(loudIdx, 2)   # loudest template values are level 2
         else:
             # If whole UL band is vetoed...
@@ -392,25 +438,26 @@ for searchBand in sorted_searchBands:
     prev_jobNum = jobNum
     prev_ulNum = ulNum
     segmentCounter += 1
-    # Print progress     
+    # Print progress
     if (jobNum > 1) and (jobNum % 200 == 0):
         if jobNum % 1000 == 0:
             print("\n")
         print( str(jobNum) + " (" + str(round( 100.0*jobNum/len(search_segments), 3) ) + "%) " )
 
 # Write search_bands.xml
+os.system("rm " + searchBandsFileName)
 indent(search_root)
 search_bands_xml = ET.ElementTree(search_root)
 search_bands_xml.write(searchBandsOutputFileName, xml_declaration=True, encoding='UTF-8', method='xml')
 
-# Bzip the search_bands.xml. 
+# Bzip the search_bands.xml.
 # Note the 'bz2' library is only built to handle strings, not files, so we resort to a system call...
 os.system("bzip2 -f " + searchBandsOutputFileName)
 
 # Write upper limits XML
 indent(upper_limit_root)
 upper_limit_bands_xml = ET.ElementTree(upper_limit_root)
-upper_limit_bands_xml.write(upperLimitOutputFileName, xml_declaration=True, encoding='UTF-8', method='xml' )
+upper_limit_bands_xml.write(upperLimitOutputFileName, xml_declaration=True, encoding='UTF-8', method='html' )
 
 # Rewrite veto_bands.xml
 # TODO  Merge IFO-vetoed bands with previous veto bands (not strictly necessary---for now)
@@ -422,7 +469,7 @@ if len(ifo_v_jobs):   # Append ifo vetoed jobs to vetoed bands file (if they exi
 
 # Write ifo_v_jobs.txt file (will overwrite existing!)
 # This is for reference only, as you only need to run this script once
-with open("../../ifo_v_jobs.txt",'a') as ifoJobsFile:
+with open("../../ifo_v_jobs.txt", 'a') as ifoJobsFile:
     ifoJobsFile.write( ifo_v_jobs )
 
 
