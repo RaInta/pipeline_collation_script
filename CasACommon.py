@@ -2,11 +2,11 @@
 #
 ###########################################
 #
-# File: testFunctions.py
+# File: CasACommon.py
 # Author: Ra Inta
 # Description:
 # Created: October 20, 2016
-# Last Modified: 20170504, R.I.
+# Last Modified: 20180326, R.I.
 #
 ###########################################
 
@@ -29,6 +29,7 @@ from math import ceil, cos, sin, pi
 import glob
 from distutils.spawn import find_executable
 from subprocess import check_output
+import getpass
 
 
 INITIAL_DIR = os.getcwd()
@@ -36,16 +37,43 @@ SCRIPTS = os.path.dirname(sys.argv[0])
 RESULTS_DIR = os.path.abspath(INITIAL_DIR)
 
 
-##################################################
-### The following will eventually be       #######
-### refactored---perhaps a separate text file  ###
-### TODO this is ugly because they're globals! ###
-##################################################
+# Attempt to infer LIGO username and account codes, otherwise prompt for them
+# in this case, a file is created and read from subsequently
+ATLAS_USER = getpass.getuser()
+CRED_FILENAME = os.path.join(SCRIPTS, "ligo_creds.txt")
 
-#LIGO_USER = "ra.inta"
-#ACCT_TAG = "ligo.prod.o1.cw.directedisolatedother.coherent"
-LIGO_USER = "ben.owen"
-ACCT_TAG = "ligo.prod.o1.cw.directedisolated.coherent"
+if ATLAS_USER == "ra1":
+    LIGO_USER = "ra.inta"
+    ACCT_TAG = "ligo.prod.o1.cw.directedisolatedother.coherent"
+elif ATLAS_USER == "owen":
+    LIGO_USER = "ben.owen"
+    ACCT_TAG = "ligo.prod.o1.cw.directedisolated.coherent"
+elif ATLAS_USER == "sano":
+    LIGO_USER = "santiago.caride"
+    ACCT_TAG = "ligo.prod.o1.cw.directedisolatedother.coherent"
+elif ATLAS_USER == "binod.rajbhandari":
+    LIGO_USER = "binod.rajbhandari"
+    ACCT_TAG = "ligo.prod.o1.cw.directedisolatedother.coherent"
+elif os.path.isfile(CRED_FILENAME):
+    # read local file for LIGO credentials
+    with open(CRED_FILENAME) as credsFile:
+        userStr = re.compile('(?<=USER:)\s*\w*\.+\w+')
+        tagStr = re.compile('(?<=TAG:)\s*\w*\.+\w+')
+        for subStr in credsFile.readlines():
+            if userStr.search(subStr):
+                LIGO_USER = userStr.search(subStr).group(0).split()[0]
+            if tagStr.search(subStr):
+                ACCT_TAG = tagStr.search( subStr).group(0).split()[0]
+else:
+    print("Your LIGO username has not been inferred.")
+    LIGO_USER = raw_input("Please enter your albert.einstein username: ")
+    ACCT_TAG = raw_input("Please enter your group accounting tag (e.g. ligo.prod.s5.cw.directedisolated.coherent): ")
+    with open(CRED_FILENAME, 'w') as credsFile:
+        credsFile.write( "LIGO_USER: " + LIGO_USER + "\n")
+        credsFile.write( "ACCT_TAG: " + ACCT_TAG )
+
+
+
 
 ##################################################
 
@@ -209,9 +237,15 @@ class CondorSubFile:
         self.queue = queue
         self.output = output
         self.error = error
+        # Default threading, RAM and disk requests
+        self.request_cpus = '1'
+        self.request_memory = '8 GB'
+        self.request_disk = '16 GB'
         # TODO Let's get rid of these globals --- maybe put in search_setup.xml
         global LIGO_USER
         global ACCT_TAG
+        global INITIAL_DIR
+        global SCRIPTS
 
     def write(self):
         """Writes out the Condor submit file"""
@@ -222,9 +256,9 @@ class CondorSubFile:
         header_str += "getenv = true\n"
         header_str += "notification = never\n"
         header_str += "log = condor.log\n"
-        header_str += "request_cpus = 1\n"
-        header_str += "request_memory = 16 GB\n"
-        header_str += "request_disk = 16 GB\n"
+        header_str += "request_cpus = " + self.request_cpus + "\n"
+        header_str += "request_memory = " + self.request_memory + "\n"
+        header_str += "request_disk = " + self.request_disk + "\n"
         header_str += "accounting_group = " + ACCT_TAG + "\n"
         header_str += "accounting_group_user = " + LIGO_USER + "\n"
         header_str += "\n"
@@ -247,7 +281,7 @@ class CondorSubFile:
         #header_str = "# global options set by " + __file__ + "\n\n"
         sub_dict = {
         "universe" : "vanilla",
-        "initialdir" : os.getcwd(),
+        "initialdir" : INITIAL_DIR,
         "getenv" : "true",
         "notification" : "never",
         "log" : "condor.log",
@@ -256,9 +290,10 @@ class CondorSubFile:
         "accounting_group_user" : LIGO_USER,
         "output" : self.output,
         "error" : self.error,
-        "request_cpus" : "1",
-        "request_memory" : "16 GB",
-        "request_disk" : "16 GB"
+        "request_cpus" : self.request_cpus,
+        "request_memory" : self.request_memory,
+        "request_disk" : self.request_disk,
+        "queue " : str(self.queue)
         }
         if len(self.args):
             arg_str = ""
@@ -282,14 +317,19 @@ class CondorSubFile:
 class SetupXML:
     def __init__(self, fileName='search_setup.xml'):
         """docstring for SetupXML
+
         For example:
             searchSetup = SetupXML('search_setup.xml')
-            searchSetup.search.band = 200
-            searchSetup.upper_limit.band = 1.0
+            searchSetup.create("setup")
+            searchSetup.add("search", "band", "200")
+            searchSetup.add("upper_limit", "band", "1.0")
             searchSetup.write()
+
         will write out the search_setup.xml, populated with the appropriate
-        values.
-            searchSetup.read()
+        values:
+            searchSetup.read("setup", "upper_limit", "band")
+            >> "1.0"
+
             """
         # Get parameters from search_setup.xml
         self.fileName = fileName
@@ -308,7 +348,7 @@ class SetupXML:
         self.mainTag = mainTag
         self.innerTag = innerTag
         self.contentsTag = contentsTag
-        #tag_contents = []
+        tag_contents = []
         # This will open bz2 files too, as long as fileName has a .bz2 extension
         with openFile( self.fileName ) as xmlContents:
             xml_root = ET.parse( xmlContents ).getroot()
@@ -316,21 +356,22 @@ class SetupXML:
             for search_params in main_tag.iter( self.innerTag ):
                 for contentsIdx in search_params.iter( self.contentsTag ):
                     #tag_contents.append( float( search_params.find( contentsIdx ).text ) )
-                    #tag_contents.append(  contentsIdx.text )
-                    tag_contents = contentsIdx.text
+                    tag_contents.append(  contentsIdx.text )
+                    #tag_contents = contentsIdx.text
         return tag_contents
     def create(self, mainTag, comment=""):
         # TODO doesn't parse comment properly yet.
         """
         Create an XML in a format consumable by this pipeline.
         e.g.
-            setupObj = SetupXML("taniwha")
+            setupObj = SetupXML("search_setup.xml")
             setupObj.create("setup")
         """
         self.mainTag = mainTag
         self.comment = comment
         self.setup_tree = ET.Element(self.mainTag)
-        ET.Comment = self.comment
+        self.setup_tree.Comment = self.comment
+        #ET.Comment = self.comment
     def add(self, innerTag, contentsTag, valueText):
         """
         Append values to a setup XML already created using .create() method
@@ -339,8 +380,6 @@ class SetupXML:
             setupObj.create("setup")
             setupObj.add("target","distance", "1.0799880875e+20")
             """
-        # TODO check we haven't already created the innerTag; if we have, just
-        # attach to it
         self.innerTag = innerTag
         self.contentsTag = contentsTag
         self.valueText = valueText
@@ -363,14 +402,6 @@ class SetupXML:
         indent(self.setup_tree)
         outside_xml = ET.ElementTree( self.setup_tree )
         outside_xml.write(self.fileName, xml_declaration=True, encoding='UTF-8', method='xml')
-
-# TODO remove the test below
-#setupObj = SetupXML("taniwha")
-#setupObj.create("setup", comment="Big one")
-#setupObj.add("outer","value", "26")
-#setupObj.add("outer","extra_value", "10,000")
-#setupObj.write()
-
 
 
 ############################################################
@@ -596,20 +627,21 @@ def template_covering_band(loudestLine, Tspan):
 ############################################################
 
 
-def run_exec(cmd):
+def run_exec(cmd, verbose=True):
     """Execute OS functions in a consistent way.
     This is so e.g. flags can be passed easily from each
     search step. It requires the subprocess module, which
     takes successive flags as a list."""
-    printStr = ""
-    printStr += "##########\n"
-    printStr += "Path: " + os.path.abspath(cmd[0]) + "\n"
     cmdStr = ""
     for cmds in cmd:
         cmdStr += cmds
-    printStr += "Executing" + cmdStr + "\n"
-    printStr += "##########\n"
-    printStr += "##########\n"
+    if verbose:
+        printStr = ""
+        printStr += "##########\n"
+        printStr += "Path: " + os.path.abspath(cmd[0]) + "\n"
+        printStr += "Executing" + cmdStr + "\n"
+        printStr += "##########\n"
+        printStr += "##########\n"
     # Test if the command is executable
     if not find_executable(cmd[0]):
         print("Command " + cmd[0] + " is not a valid executable.")
@@ -625,44 +657,65 @@ def run_exec(cmd):
 ############################################################
 # Calculate orbital Doppler factor
 ############################################################
+# NOTE most of this is archived currently; the first section is
+# calculating the Doppler shift a priori and has been replaced... for now.
 
-# Astrophysical constants
-W_YEAR = 2*pi/(365.25*24*3600)  # Angular velocity of the Earth around the Sun
-W_DAY = 2*pi/(23.9344699*3600)  # Angular velocity of the Earth's own rotation (sidereal)
-R_AU = 149597870700  # 1 Au (m)
-R_EARTH = 6371000  # Earth's mean radius (m)
-# Calculate Earth's tangential orbital velocity:
-c = 299792458.0  # m/s
-V_YEAR = W_YEAR*R_AU/c  # Dimensionless beta of Earth's solar orbital speed
-V_DAY = W_DAY*R_EARTH/c  # Dimensionless beta of Earth's own rotational speed
-
-# TODO use ephemereides files like sane people do (mind you, the current method
-# saves reading a file each time)
-# For now, let's hard-code the 2017 Vernal Equinox:
-# Monday, March 20, 2017, 10:29 UTC
-T_EQUINOX = 1174040956
-
-def deg2rad(degrees, minutes=0.0, seconds=0.0):
-    """Converts from degrees, minutes, seconds to radians"""
-    return (pi/180)*(degrees+(minutes/60.0)+(seconds/3600.0))
-
-def epsilon(t):
-    """Calculates the Earth's orbital inclination to the ecliptic at
-    time t (GPS).
-
-    This uses JPL's updated ephemerides:
-    epsilon = 23deg 26m 21.406s -46.836769s * T -0.0001831s * pow(T, 2)
-    +0.00200340s * pow(T, 3) -0.576e-6s * pow(T, 4) -4.34e-8s * pow(T, 5)
-    Where T is the time, in Julian centuries, since the J2000 epoch.
-    [Astronomical Almanac 2010, p. B52]
-
-    GPS time for J2000 epoch:
-    January 1, 2000, 11:58:55.816 UTC"""
-    t_J2000 = 630763148
-    T = (t - t_J2000)/(100*365.25*24*3600)
-    return deg2rad(23, 26, 21.406) - deg2rad(0, 0, 46.836769)*T - deg2rad(0, 0, 0.0001831)*pow(T, 2) + deg2rad(0, 0, 0.00200340)*pow(T, 3) \
-           - deg2rad(0, 0, 0.576e-6)*pow(T, 4) - deg2rad(0, 0, 4.34e-8) * pow(T, 5)
-
+## Astrophysical constants
+#W_YEAR = 2*pi/(365.25*24*3600)  # Angular velocity of the Earth around the Sun
+#W_DAY = 2*pi/(23.9344699*3600)  # Angular velocity of the Earth's own rotation (sidereal)
+#R_AU = 149597870700  # 1 Au (m)
+#R_EARTH = 6371000  # Earth's mean radius (m)
+## Calculate Earth's tangential orbital velocity:
+#c = 299792458.0  # m/s
+#V_YEAR = W_YEAR*R_AU/c  # Dimensionless beta of Earth's solar orbital speed
+#V_DAY = W_DAY*R_EARTH/c  # Dimensionless beta of Earth's own rotational speed
+#
+## TODO use ephemereides files like sane people do (mind you, the current method
+## saves reading a file each time)
+## For now, let's hard-code the 2017 Vernal Equinox:
+## Monday, March 20, 2017, 10:29 UTC
+#T_EQUINOX = 1174040956
+#
+#def deg2rad(degrees, minutes=0.0, seconds=0.0):
+#    """Converts from degrees, minutes, seconds to radians"""
+#    return (pi/180)*(degrees+(minutes/60.0)+(seconds/3600.0))
+#
+#def epsilon(t):
+#    """Calculates the Earth's orbital inclination to the ecliptic at
+#    time t (GPS).
+#
+#    This uses JPL's updated ephemerides:
+#    epsilon = 23deg 26m 21.406s -46.836769s * T -0.0001831s * pow(T, 2)
+#    +0.00200340s * pow(T, 3) -0.576e-6s * pow(T, 4) -4.34e-8s * pow(T, 5)
+#    Where T is the time, in Julian centuries, since the J2000 epoch.
+#    [Astronomical Almanac 2010, p. B52]
+#
+#    GPS time for J2000 epoch:
+#    January 1, 2000, 11:58:55.816 UTC"""
+#    t_J2000 = 630763148
+#    T = (t - t_J2000)/(100*365.25*24*3600)
+#    return deg2rad(23, 26, 21.406) - deg2rad(0, 0, 46.836769)*T - deg2rad(0, 0, 0.0001831)*pow(T, 2) + deg2rad(0, 0, 0.00200340)*pow(T, 3) \
+#           - deg2rad(0, 0, 0.576e-6)*pow(T, 4) - deg2rad(0, 0, 4.34e-8) * pow(T, 5)
+#
+#def orbitalDoppler(alpha, delta, t):
+#    """A function to calculate the orbital component of the Doppler shift due to Earth's
+#    orbital motion around the Sun. It requires Right Ascension (alpha), declination (delta),
+#    and GPS time (t). It also requires the time of the (Northern Hemisphere) Vernal Equinox,
+#    and the inclination to the ecliptic (epsilon) although these are referenced internally.
+#    The Doppler factor is returned."""
+#    epsilon_t = epsilon(t)
+#    return 1 -V_YEAR*(cos(delta)*sin(alpha)*cos(epsilon_t) + sin(delta)*sin(epsilon_t))*cos(W_YEAR*(t - T_EQUINOX)) \
+#           +V_YEAR*cos(delta)*cos(alpha)*cos(W_YEAR*(t - T_EQUINOX) )
+#
+#def siderealDoppler(alpha, delta, t):
+#    """Calculates Doppler shift factor as a result of Earth's sidereal motion"""
+#    # TODO Don't use this yet---needs fixing
+#    epsilon_t = epsilon(t)
+#    # \del(v.n)
+#    #return -V_DAY*W_DAY*delta_t *(cos(delta)*sin(alpha)*cos(epsilon_t) + sin(delta)*sin(epsilon_t))*cos(W_DAY*(t-T_EQUINOX)) \
+#    #        -V_DAY*W_DAY*delta_t*cos(delta)*cos(alpha)*sin(W_DAY*(t-T_EQUINOX))
+#    return 1 -V_DAY*W_DAY*(cos(delta)*sin(alpha)*cos(epsilon_t) + sin(delta)*sin(epsilon_t))*cos(W_DAY*(t-T_EQUINOX)) \
+#            -V_DAY*W_DAY*cos(delta)*cos(alpha)*sin(W_DAY*(t-T_EQUINOX))
 
 def orbitalDoppler(alpha, delta, t):
     """A function to calculate the orbital component of the Doppler shift due to Earth's
@@ -670,22 +723,14 @@ def orbitalDoppler(alpha, delta, t):
     and GPS time (t). It also requires the time of the (Northern Hemisphere) Vernal Equinox,
     and the inclination to the ecliptic (epsilon) although these are referenced internally.
     The Doppler factor is returned."""
-    epsilon_t = epsilon(t)
-    return 1 -V_YEAR*(cos(delta)*sin(alpha)*cos(epsilon_t) + sin(delta)*sin(epsilon_t))*cos(W_YEAR*(t - T_EQUINOX)) \
-           +V_YEAR*cos(delta)*cos(alpha)*cos(W_YEAR*(t - T_EQUINOX) )
-
-
-
-def siderealDoppler(alpha, delta, t):
-    """Calculates Doppler shift factor as a result of Earth's sidereal motion"""
-    # TODO Don't use this yet---needs fixing
-    epsilon_t = epsilon(t)
-    # \del(v.n)
-    #return -V_DAY*W_DAY*delta_t *(cos(delta)*sin(alpha)*cos(epsilon_t) + sin(delta)*sin(epsilon_t))*cos(W_DAY*(t-T_EQUINOX)) \
-    #        -V_DAY*W_DAY*delta_t*cos(delta)*cos(alpha)*sin(W_DAY*(t-T_EQUINOX))
-    return 1 -V_DAY*W_DAY*(cos(delta)*sin(alpha)*cos(epsilon_t) + sin(delta)*sin(epsilon_t))*cos(W_DAY*(t-T_EQUINOX)) \
-            -V_DAY*W_DAY*cos(delta)*cos(alpha)*sin(W_DAY*(t-T_EQUINOX))
-
+    # Call the lalapps function
+    execPath = os.path.abspath(os.path.join(SCRIPTS, "production", "bin", "lalapps_PrintDetectorState"))
+    ephemPath = os.path.join(SCRIPTS, "production", "share", "lalpulsar")
+    DF_H1 = check_output([execPath, "-I", "H1", "-a", str(alpha),"-d", str(delta), "-t", str(t), "-y", "00-19-DE405", "-E", ephemPath])
+    srchStr = re.compile(r'dtSSB/dtDet - 1 = [-+]?[0-9]+.[0-9]+e[-+]?[0-9]+')
+    srchNum = re.compile(r'[-+]?[0-9]+.[0-9]+e[-+]?[0-9]+')
+    rateStr = srchNum.search(srchStr.search(DF_H1).group()).group()
+    return 1 + float(rateStr)
 
 ############################################################
 ###             End of CasACommon.py                     ###
